@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Gemini Lite</string>
+
+    <string name="widget_name">New chat</string>
+    <string name="widget_description">Start a new Gemini conversation with the keyboard ready.</string>
+    <string name="widget_label">New chat</string>
+
+    <string name="widget_ask_name">Ask Gemini</string>
+    <string name="widget_ask_description">Ask Gemini with text or your voice right from the home screen.</string>
+    <string name="widget_ask_label">Ask Gemini</string>
+    <string name="widget_ask_content_description">Open Gemini and focus the message box</string>
+    <string name="widget_voice_description">Ask Gemini with your voice</string>
+
+    <string name="error_title">Can\'t reach Gemini</string>
+    <string name="error_message">Check your internet connection and try again.</string>
+    <string name="retry">Retry</string>
+
+    <string name="shortcut_new_chat_short">New chat</string>
+    <string name="shortcut_new_chat_long">Start a new Gemini chat</string>
+</resources>

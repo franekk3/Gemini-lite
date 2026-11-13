@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:description="@string/widget_ask_description"
+    android:initialLayout="@layout/widget_ask_gemini"
+    android:minHeight="46dp"
+    android:minResizeHeight="46dp"
+    android:minResizeWidth="180dp"
+    android:minWidth="240dp"
+    android:previewImage="@drawable/widget_search_preview"
+    android:previewLayout="@layout/widget_ask_gemini"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellHeight="1"
+    android:targetCellWidth="4"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    tools:targetApi="31" />

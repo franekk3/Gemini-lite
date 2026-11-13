@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="new_chat"
+        android:shortcutLongLabel="@string/shortcut_new_chat_long"
+        android:shortcutShortLabel="@string/shortcut_new_chat_short">
+        <intent
+            android:action="com.frank.geminilite.action.NEW_CHAT"
+            android:targetClass="com.frank.geminilite.MainActivity"
+            android:targetPackage="com.frank.geminilite" />
+    </shortcut>
+
+</shortcuts>

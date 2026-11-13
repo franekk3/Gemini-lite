@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="window_bg">#FFFFFF</color>
+    <color name="splash_bg">#0B0918</color>
+    <color name="brand_violet">#8B7BFF</color>
+    <color name="brand_violet_soft">#C9BCFF</color>
+
+    <!-- Monochrome widgets, matching the black-on-white app icon. -->
+    <color name="widget_surface">#FFFFFF</color>
+    <color name="widget_outline">#1F000000</color>
+    <color name="widget_text">#000000</color>
+    <color name="widget_hint">#5F6368</color>
+</resources>
