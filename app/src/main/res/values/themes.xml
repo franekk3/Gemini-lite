@@ -17,4 +17,10 @@
         <item name="android:enforceNavigationBarContrast" tools:targetApi="q">false</item>
         <item name="android:enforceStatusBarContrast" tools:targetApi="q">false</item>
     </style>
+
+    <style name="Theme.GeminiLite.About" parent="Theme.GeminiLite.Base">
+        <item name="android:windowBackground">@color/window_bg</item>
+        <item name="android:colorAccent">@color/brand_violet</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

@@ -24,7 +24,26 @@ class AskGeminiWidgetProvider : AppWidgetProvider() {
     companion object {
 
         fun buildRemoteViews(context: Context): RemoteViews {
+            val dark = WidgetThemePrefs.resolveDark(context)
             val views = RemoteViews(context.packageName, R.layout.widget_ask_gemini)
+            views.setInt(
+                R.id.ask_widget_bar,
+                "setBackgroundResource",
+                if (dark) R.drawable.widget_search_background_dark else R.drawable.widget_search_background
+            )
+            views.setImageViewResource(
+                R.id.ask_widget_logo,
+                if (dark) R.drawable.ic_spark_white else R.drawable.ic_spark
+            )
+            views.setImageViewResource(
+                R.id.ask_widget_mic,
+                if (dark) R.drawable.ic_mic_white else R.drawable.ic_mic
+            )
+            views.setTextColor(
+                R.id.ask_widget_label,
+                context.getColor(if (dark) R.color.widget_hint_dark else R.color.widget_hint)
+            )
+
             val openChat = WidgetIntents.newChat(context, requestCode = 1002)
             views.setOnClickPendingIntent(R.id.ask_widget_root, openChat)
             views.setOnClickPendingIntent(R.id.ask_widget_bar, openChat)

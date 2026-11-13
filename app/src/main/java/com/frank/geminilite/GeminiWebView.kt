@@ -6,8 +6,12 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.os.Message
+import android.os.Process
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.util.Log
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
@@ -19,9 +23,12 @@ import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import java.io.ByteArrayInputStream
+import kotlin.math.abs
 
 /**
  * A WebView tuned for a native-feeling Gemini client: persistent cache, a Chrome-like
@@ -46,6 +53,29 @@ class GeminiWebView @JvmOverloads constructor(
             "support.google.com",
             "policies.google.com"
         )
+
+        /**
+         * Telemetry, ad and marketing hosts. Blocking these saves requests, CPU
+         * and memory on Gemini's heavy page without affecting the product UI.
+         */
+        private val TRACKING_HOSTS = listOf(
+            "googletagmanager.com",
+            "google-analytics.com",
+            "googleadservices.com",
+            "googlesyndication.com",
+            "doubleclick.net",
+            "adtrafficquality.google",
+            "ogads-pa.clients6.google.com",
+            "waa-pa.clients6.google.com"
+        )
+
+        private fun isTrackingRequest(uri: Uri): Boolean {
+            val host = uri.host?.lowercase() ?: return false
+            if (host == "play.google.com") {
+                return uri.path.orEmpty().startsWith("/log")
+            }
+            return TRACKING_HOSTS.any { host == it || host.endsWith(".$it") }
+        }
 
         fun isGeminiUrl(uri: Uri?): Boolean {
             val host = uri?.host?.lowercase() ?: return false
@@ -102,9 +132,26 @@ class GeminiWebView @JvmOverloads constructor(
     var onCreateWindowRequest: ((Message) -> Boolean)? = null
     var onCloseWindowRequest: (() -> Unit)? = null
     var onRendererGoneCallback: (() -> Unit)? = null
+    var onAboutRequested: (() -> Unit)? = null
+
+    /** Called when the user swipes right from the left side of the page. */
+    var onSidebarSwipe: (() -> Unit)? = null
+
+    /** Called when the user swipes left, to dismiss the conversation drawer. */
+    var onSidebarSwipeClose: (() -> Unit)? = null
+
+    private val sidebarSwipeThreshold =
+        64f * resources.displayMetrics.density
+    private var swipeStartX = 0f
+    private var swipeStartY = 0f
+    private var swipeStartedAt = 0L
+    private var swipeInvalidated = false
+    private var sidebarSwipeActive = false
 
     init {
-        setBackgroundColor(Color.WHITE)
+        setBackgroundColor(Color.TRANSPARENT)
+        // Keep the preloading renderer at full priority while it is not yet attached.
+        setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         overScrollMode = OVER_SCROLL_NEVER
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
@@ -150,6 +197,54 @@ class GeminiWebView @JvmOverloads constructor(
         onMainFrameError?.invoke(-1, "")
     }
 
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swipeStartX = event.x
+                swipeStartY = event.y
+                swipeStartedAt = event.eventTime
+                swipeInvalidated = false
+            }
+
+            MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_CANCEL -> {
+                swipeInvalidated = true
+            }
+
+            MotionEvent.ACTION_UP -> {
+                if (!swipeInvalidated && event.pointerCount == 1) {
+                    val dx = event.x - swipeStartX
+                    val dy = abs(event.y - swipeStartY)
+                    val duration = event.eventTime - swipeStartedAt
+                    val horizontalSwipe =
+                        abs(dx) >= sidebarSwipeThreshold &&
+                            abs(dx) >= dy * 1.5f &&
+                            duration in 0..700L
+
+                    if (sidebarSwipeActive && horizontalSwipe) {
+                        if (dx > 0 && swipeStartX <= width * 0.35f) {
+                            swipeInvalidated = true
+                            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            onSidebarSwipe?.invoke()
+                        } else if (dx < 0) {
+                            swipeInvalidated = true
+                            onSidebarSwipeClose?.invoke()
+                        }
+                    }
+                }
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    private fun setSidebarSwipeActive(active: Boolean) {
+        sidebarSwipeActive = active
+    }
+
+    /** Re-syncs drawer gesture availability after adopting a preloaded WebView. */
+    fun syncSidebarSwipeState() {
+        sidebarSwipeActive = isGeminiUrl(url?.let { Uri.parse(it) })
+    }
+
     private fun handleNavigation(uri: Uri): Boolean {
         val scheme = uri.scheme?.lowercase().orEmpty()
         return when {
@@ -174,12 +269,34 @@ class GeminiWebView @JvmOverloads constructor(
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
             handleNavigation(request.url)
 
+        override fun shouldInterceptRequest(
+            view: WebView,
+            request: WebResourceRequest
+        ): WebResourceResponse? {
+            if (!request.isForMainFrame && isTrackingRequest(request.url)) {
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "Blocked tracking request: ${request.url}")
+                }
+                return WebResourceResponse(
+                    "text/plain",
+                    "utf-8",
+                    ByteArrayInputStream(ByteArray(0))
+                )
+            }
+            return super.shouldInterceptRequest(view, request)
+        }
+
         @Deprecated("Deprecated in Java")
         override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
             handleNavigation(Uri.parse(url))
 
         override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
             super.onPageStarted(view, url, favicon)
+            if (BuildConfig.DEBUG) {
+                val elapsed = SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()
+                Log.d(TAG, "Page started at +${elapsed}ms: $url")
+            }
+            setSidebarSwipeActive(url != null && isGeminiUrl(Uri.parse(url)))
             onPageStartedCallback?.invoke()
         }
 
@@ -190,6 +307,11 @@ class GeminiWebView @JvmOverloads constructor(
 
         override fun onPageFinished(view: WebView, url: String?) {
             super.onPageFinished(view, url)
+            setSidebarSwipeActive(url != null && isGeminiUrl(Uri.parse(url)))
+            if (BuildConfig.DEBUG) {
+                val elapsed = SystemClock.elapsedRealtime() - Process.getStartElapsedRealtime()
+                Log.d(TAG, "Page finished at +${elapsed}ms: $url")
+            }
             onPageFinishedCallback?.invoke()
         }
 
@@ -278,6 +400,11 @@ class GeminiWebView @JvmOverloads constructor(
         @JavascriptInterface
         fun keyboard() {
             post { onKeyboardRequested?.invoke() }
+        }
+
+        @JavascriptInterface
+        fun openAbout() {
+            post { onAboutRequested?.invoke() }
         }
     }
 }

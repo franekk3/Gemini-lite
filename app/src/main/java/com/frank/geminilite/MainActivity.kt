@@ -2,7 +2,9 @@ package com.frank.geminilite
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
+import android.content.MutableContextWrapper
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.database.Cursor
@@ -12,8 +14,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Message
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
@@ -32,6 +36,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -50,6 +55,7 @@ class MainActivity : ComponentActivity() {
         private const val STATE_PENDING_FOCUS = "state_pending_focus"
         private const val STATE_PENDING_VOICE = "state_pending_voice"
         private const val STATE_INTENT_CONSUMED = "state_intent_consumed"
+        private const val STATE_LAST_URL = "state_last_url"
         private const val TAG = "GeminiLite"
     }
 
@@ -68,11 +74,21 @@ class MainActivity : ComponentActivity() {
     private var pendingFocus = false
     private var pendingVoice = false
     private var activityResumed = false
+    private var currentDark = false
     private var lastThemeKey: Int? = null
+    private var injectedUrl: String? = null
 
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
     private var pendingPermissionRequest: PermissionRequest? = null
     private var awaitingMicrophonePermission = false
+    private var pendingCapture: PendingCapture? = null
+
+    private data class PendingCapture(
+        val callback: ValueCallback<Array<Uri>>,
+        val params: WebChromeClient.FileChooserParams,
+        val file: File,
+        val uri: Uri
+    )
 
     private val filePicker =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -92,6 +108,33 @@ class MainActivity : ComponentActivity() {
                 )
             }
             stageFilesForWebView(callback, uris)
+        }
+
+    private val cameraPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val capture = pendingCapture ?: return@registerForActivityResult
+            if (granted) {
+                launchCamera(capture)
+            } else {
+                pendingCapture = null
+                capture.file.delete()
+                launchPicker(capture.callback, capture.params)
+            }
+        }
+
+    private val cameraLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val capture = pendingCapture ?: return@registerForActivityResult
+            pendingCapture = null
+            if (result.resultCode == RESULT_OK && capture.file.length() > 0L) {
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "Camera capture: ${capture.file.length()} bytes")
+                }
+                capture.callback.onReceiveValue(arrayOf(Uri.fromFile(capture.file)))
+            } else {
+                capture.file.delete()
+                capture.callback.onReceiveValue(null)
+            }
         }
 
     private fun extractFileChooserUris(resultCode: Int, data: Intent?): Array<Uri>? {
@@ -220,7 +263,10 @@ class MainActivity : ComponentActivity() {
             window.isNavigationBarContrastEnforced = false
         }
 
-        Thread { cleanUploadCache() }.apply { isDaemon = true }.start()
+        root.postDelayed(
+            { Thread { cleanUploadCache() }.apply { isDaemon = true }.start() },
+            4_000
+        )
         applyWindowInsets()
         setupBackNavigation()
 
@@ -235,7 +281,30 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        webView = createWebView()
+        val savedWebViewState = savedInstanceState?.getBundle(STATE_WEBVIEW)
+        val intentAlreadyConsumed =
+            savedInstanceState?.getBoolean(STATE_INTENT_CONSUMED, false) == true
+        val wantsNewChat = !intentAlreadyConsumed && isNewChatIntent(intent)
+        val wantsVoice = !intentAlreadyConsumed && isVoiceIntent(intent)
+        val savedUrl = savedInstanceState?.getString(STATE_LAST_URL)
+        val savedUrlIsFreshChat = savedUrl != null && isFreshChatUrl(savedUrl)
+        // A saved conversation is restored into a fresh WebView. A saved fresh
+        // chat (or no saved state at all) can reuse the already-loading /app page.
+        val shouldUsePreloaded =
+            wantsNewChat || wantsVoice || savedWebViewState == null || savedUrlIsFreshChat
+
+        val preloaded = if (shouldUsePreloaded) WebViewPreloader.take() else null
+        if (!shouldUsePreloaded) WebViewPreloader.discard()
+        val usingPreloaded = preloaded != null
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                TAG,
+                "usingPreloaded=$usingPreloaded, savedState=${savedWebViewState != null}, " +
+                    "newChat=$wantsNewChat, voice=$wantsVoice"
+            )
+        }
+
+        webView = createWebView(preloaded)
         webContainer.addView(
             webView,
             FrameLayout.LayoutParams(
@@ -243,14 +312,38 @@ class MainActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
+        webView.syncSidebarSwipeState()
+        if (usingPreloaded && webView.progress < 100) {
+            loadProgress.visibility = View.VISIBLE
+        }
 
         applyPageTheme(
             dark = isSystemInDarkMode(),
             color = ContextCompat.getColor(this, R.color.window_bg)
         )
 
-        loadInitialPage(savedInstanceState)
+        loadInitialPage(savedInstanceState, usingPreloaded)
         clearLaunchIntentFlags(intent)
+
+        if (usingPreloaded) {
+            // The preloaded page may have finished before the activity callbacks
+            // were attached, so replay the usual finish handling once.
+            webView.post {
+                if (!::webView.isInitialized) return@post
+                if (webView.url == null && webView.progress >= 100) {
+                    webView.loadUrl(GeminiWebView.HOME_URL)
+                    return@post
+                }
+                if (webView.progress >= 100) {
+                    loadProgress.visibility = View.GONE
+                    injectPageScript()
+                    when {
+                        pendingVoice -> requestVoiceInput()
+                        pendingFocus -> requestComposerFocus()
+                    }
+                }
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -295,6 +388,7 @@ class MainActivity : ComponentActivity() {
                 outState.putBoolean(STATE_PENDING_FOCUS, pendingFocus)
                 outState.putBoolean(STATE_PENDING_VOICE, pendingVoice)
                 outState.putBoolean(STATE_INTENT_CONSUMED, true)
+                outState.putString(STATE_LAST_URL, webView.url)
             }
         }
     }
@@ -313,9 +407,16 @@ class MainActivity : ComponentActivity() {
 
     // region WebView setup
 
-    private fun createWebView(): GeminiWebView {
-        val view = GeminiWebView(this).apply {
+    private fun createWebView(preloaded: GeminiWebView? = null): GeminiWebView {
+        val view = preloaded ?: GeminiWebView(this)
+        if (preloaded != null) {
+            // The WebView was created with an application context while preloading;
+            // switch it to the activity for dialogs, pickers and other UI.
+            (preloaded.context as? MutableContextWrapper)?.baseContext = this
+        }
+        view.apply {
             onPageStartedCallback = {
+                injectedUrl = null
                 errorView.visibility = View.GONE
                 loadProgress.visibility = View.VISIBLE
             }
@@ -345,29 +446,34 @@ class MainActivity : ComponentActivity() {
             onPermissionRequestCallback = { request -> handlePermissionRequest(request) }
             onCreateWindowRequest = { message -> showPopup(message) }
             onRendererGoneCallback = { recoverFromRendererCrash() }
+            onSidebarSwipe = { openSidebar() }
+            onSidebarSwipeClose = { closeSidebar() }
+            onAboutRequested = { openAboutScreen() }
         }
+        view.syncSidebarSwipeState()
         return view
     }
 
-    private fun loadInitialPage(savedInstanceState: Bundle?) {
+    private fun loadInitialPage(savedInstanceState: Bundle?, usingPreloaded: Boolean) {
         val intentAlreadyConsumed =
             savedInstanceState?.getBoolean(STATE_INTENT_CONSUMED, false) == true
 
         if (!intentAlreadyConsumed && isVoiceIntent(intent)) {
             pendingFocus = false
             pendingVoice = true
-            webView.loadUrl(GeminiWebView.HOME_URL)
+            if (!usingPreloaded) webView.loadUrl(GeminiWebView.HOME_URL)
             return
         }
 
         if (!intentAlreadyConsumed && isNewChatIntent(intent)) {
             pendingFocus = true
-            webView.loadUrl(GeminiWebView.HOME_URL)
+            if (!usingPreloaded) webView.loadUrl(GeminiWebView.HOME_URL)
             return
         }
 
         val savedState = savedInstanceState?.getBundle(STATE_WEBVIEW)
         if (savedState != null) {
+            if (usingPreloaded) return
             pendingFocus = savedInstanceState.getBoolean(STATE_PENDING_FOCUS, false)
             pendingVoice = savedInstanceState.getBoolean(STATE_PENDING_VOICE, false)
             if (webView.restoreState(savedState) == null) {
@@ -377,10 +483,11 @@ class MainActivity : ComponentActivity() {
         }
 
         val deepLink = intent?.data
-        if (intent?.action == Intent.ACTION_VIEW && GeminiWebView.isGeminiUrl(deepLink)) {
-            webView.loadUrl(deepLink.toString())
-        } else {
-            webView.loadUrl(GeminiWebView.HOME_URL)
+        when {
+            intent?.action == Intent.ACTION_VIEW && GeminiWebView.isGeminiUrl(deepLink) ->
+                webView.loadUrl(deepLink.toString())
+
+            !usingPreloaded -> webView.loadUrl(GeminiWebView.HOME_URL)
         }
     }
 
@@ -450,6 +557,33 @@ class MainActivity : ComponentActivity() {
         webView.evaluateJavascript(Injection.FOCUS_COMMAND, null)
     }
 
+    private fun openSidebar() {
+        if (!::webView.isInitialized) return
+        val current = webView.url?.let { Uri.parse(it) }
+        if (current == null || !GeminiWebView.isGeminiUrl(current)) return
+        injectPageScript()
+        webView.evaluateJavascript(Injection.OPEN_SIDEBAR_COMMAND, null)
+    }
+
+    private fun openAboutScreen() {
+        startActivity(
+            Intent(this, AboutActivity::class.java)
+                .putExtra(AboutActivity.EXTRA_DARK, currentDark)
+        )
+    }
+
+    private fun closeSidebar() {
+        if (!::webView.isInitialized) return
+        val current = webView.url?.let { Uri.parse(it) }
+        if (current == null || !GeminiWebView.isGeminiUrl(current)) return
+        injectPageScript()
+        webView.evaluateJavascript(Injection.CLOSE_SIDEBAR_COMMAND) { result ->
+            if (result?.trim('"') == "true") {
+                webView.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            }
+        }
+    }
+
     /**
      * Opens a fresh chat and starts Gemini's own dictation. The page script
      * waits for the mic button and clicks it; no keyboard is requested.
@@ -488,8 +622,12 @@ class MainActivity : ComponentActivity() {
         if (!::webView.isInitialized) return
         val current = webView.url ?: return
         if (!GeminiWebView.isGeminiUrl(Uri.parse(current))) return
+        // onPageCommitVisible and onPageFinished both call this; a page only needs
+        // the script once. onPageStarted clears the marker for reloads.
+        if (current == injectedUrl) return
         val script = Injection.script(applicationContext)
         if (script.isNotEmpty()) {
+            injectedUrl = current
             webView.evaluateJavascript(script, null)
         }
     }
@@ -570,6 +708,7 @@ class MainActivity : ComponentActivity() {
         val key = (color shl 1) or if (dark) 1 else 0
         if (lastThemeKey == key) return
         lastThemeKey = key
+        currentDark = dark
 
         window.setBackgroundDrawable(ColorDrawable(color))
         root.setBackgroundColor(color)
@@ -677,6 +816,99 @@ class MainActivity : ComponentActivity() {
         params: WebChromeClient.FileChooserParams
     ) {
         fileChooserCallback?.onReceiveValue(null)
+        fileChooserCallback = null
+        pendingCapture?.let { old ->
+            old.callback.onReceiveValue(null)
+            old.file.delete()
+        }
+        pendingCapture = null
+
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                TAG,
+                "File chooser: mode=${params.mode}, capture=${params.isCaptureEnabled}, " +
+                    "accept=${params.acceptTypes?.joinToString()}"
+            )
+        }
+
+        if (params.isCaptureEnabled && isImageCapture(params)) {
+            startCameraCapture(callback, params)
+        } else {
+            launchPicker(callback, params)
+        }
+    }
+
+    private fun isImageCapture(params: WebChromeClient.FileChooserParams): Boolean {
+        val types = params.acceptTypes ?: return false
+        val hasImage = types.any { it.equals("*/*", true) || it.startsWith("image/", true) }
+        val onlyVideo = types.isNotEmpty() && types.all { it.startsWith("video/", true) }
+        return hasImage && !onlyVideo
+    }
+
+    private fun startCameraCapture(
+        callback: ValueCallback<Array<Uri>>,
+        params: WebChromeClient.FileChooserParams
+    ) {
+        val directory = File(cacheDir, "uploads").apply { mkdirs() }
+        val file = File(directory, "camera_${System.currentTimeMillis()}.jpg")
+        val uri = try {
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not create camera capture file", error)
+            launchPicker(callback, params)
+            return
+        }
+
+        val capture = PendingCapture(callback, params, file, uri)
+        pendingCapture = capture
+
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            launchCamera(capture)
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun launchCamera(capture: PendingCapture) {
+        val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+            putExtra(MediaStore.EXTRA_OUTPUT, capture.uri)
+            clipData = ClipData.newRawUri("camera-output", capture.uri)
+            addFlags(
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+
+        try {
+            val cameraPackage = intent.resolveActivity(packageManager)?.packageName
+            if (cameraPackage != null) {
+                grantUriPermission(
+                    cameraPackage,
+                    capture.uri,
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            cameraLauncher.launch(intent)
+        } catch (_: ActivityNotFoundException) {
+            pendingCapture = null
+            capture.file.delete()
+            launchPicker(capture.callback, capture.params)
+        } catch (_: Exception) {
+            pendingCapture = null
+            capture.file.delete()
+            launchPicker(capture.callback, capture.params)
+        }
+    }
+
+    private fun launchPicker(
+        callback: ValueCallback<Array<Uri>>,
+        params: WebChromeClient.FileChooserParams
+    ) {
         fileChooserCallback = callback
 
         // Use the intent WebView built for this input directly. Wrapping it in a
@@ -686,14 +918,6 @@ class MainActivity : ComponentActivity() {
             fileChooserCallback = null
             callback.onReceiveValue(null)
             return
-        }
-
-        if (BuildConfig.DEBUG) {
-            Log.d(
-                TAG,
-                "File chooser: mode=${params.mode}, action=${intent.action}, " +
-                    "type=${intent.type}, accept=${params.acceptTypes?.joinToString()}"
-            )
         }
 
         try {

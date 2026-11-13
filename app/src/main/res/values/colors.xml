@@ -10,4 +10,10 @@
     <color name="widget_outline">#1F000000</color>
     <color name="widget_text">#000000</color>
     <color name="widget_hint">#5F6368</color>
+
+    <!-- Monochrome dark widgets -->
+    <color name="widget_surface_dark">#1C1C1E</color>
+    <color name="widget_outline_dark">#33FFFFFF</color>
+    <color name="widget_text_dark">#FFFFFF</color>
+    <color name="widget_hint_dark">#A8ABAF</color>
 </resources>

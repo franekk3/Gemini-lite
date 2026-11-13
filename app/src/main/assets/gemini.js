@@ -70,7 +70,12 @@
     '[data-test-id="bard-g1-dynamic-upsell-menu-button"],',
     'a[href*="play.google.com/store/apps/details?id=com.google.android.apps.bard"],',
     'a[href*="apps.apple.com/app/google-gemini"],',
-    'a[href*="mweb_upsell"]{display:none !important;}'
+    'a[href*="mweb_upsell"]{display:none !important;}',
+    '#gl-sidebar-section{margin:0 8px;padding:4px 0;border-top:1px solid rgba(128,128,128,0.22);}',
+    '.gl-sidebar-button{display:flex;align-items:center;gap:12px;width:100%;height:44px;padding:0 16px;border:0;background:transparent;color:inherit;font-family:inherit;font-size:14px;font-weight:500;border-radius:999px;cursor:pointer;text-align:left;-webkit-tap-highlight-color:transparent;}',
+    '.gl-sidebar-button:hover,.gl-sidebar-button:active{background:rgba(128,128,128,0.16);}',
+    '.gl-sidebar-icon{width:20px;height:20px;flex:0 0 20px;opacity:0.9;}',
+    '.gl-sidebar-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}'
   ].join('\n');
 
   var FOCUS_SELECTORS = [
@@ -92,6 +97,19 @@
     'a[href="/app"]',
     'a[href="https://gemini.google.com/app"]'
   ];
+
+  var MENU_SELECTORS = [
+    'button[aria-label="Main menu" i]',
+    'button[aria-label="Menu główne" i]',
+    'button[aria-label*="main menu" i]',
+    'button[aria-label*="menu główne" i]',
+    'button[aria-label*="navigation menu" i]',
+    'button[aria-label*="open menu" i]',
+    '[data-test-id="main-menu-button"]',
+    '[data-test-id*="menu-button" i]'
+  ];
+
+  var MENU_LABEL_RE = /menu|menü|menú|menù|меню|菜单|メニュー|메뉴|القائمة|मेनू/i;
 
   var MIC_SELECTORS = [
     'button[aria-label*="dyktuj" i]',
@@ -193,6 +211,75 @@
     for (var i = 0; i < backdrops.length; i++) hide(backdrops[i]);
   }
 
+  function ensureLiteSection() {
+    var overflow = document.querySelector('.overflow-container');
+    var controls = overflow ? overflow.querySelector('.mobile-controls') : null;
+    var host = overflow && controls ? overflow : null;
+    var existing = document.getElementById('gl-sidebar-section');
+
+    // Keep it in the fixed footer area, above the About/settings controls, so
+    // conversation-history scrolling cannot hide it.
+    if (existing && existing.isConnected) {
+      if (host && existing.parentNode === host && existing.nextElementSibling === controls) {
+        return;
+      }
+      existing.remove();
+    }
+
+    if (!host || !controls) {
+      // Fallback for layouts without the mobile footer.
+      var topActions = document.querySelector(
+        '.overflow-container mat-nav-list.top-action-list-scrollable'
+      );
+      if (!topActions || !topActions.parentNode) return;
+      host = topActions.parentNode;
+      controls = topActions.nextSibling;
+    }
+
+    var section = document.createElement('div');
+    section.id = 'gl-sidebar-section';
+
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gl-sidebar-button';
+    button.setAttribute('aria-label', 'Gemini Lite');
+
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('class', 'gl-sidebar-icon');
+    svg.setAttribute('aria-hidden', 'true');
+    var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('fill', 'currentColor');
+    path.setAttribute(
+      'd',
+      'M12,1.8 C13.1,8.2 15.8,10.9 22.2,12 C15.8,13.1 13.1,15.8 12,22.2 ' +
+        'C10.9,15.8 8.2,13.1 1.8,12 C8.2,10.9 10.9,8.2 12,1.8 Z'
+    );
+    svg.appendChild(path);
+
+    var label = document.createElement('span');
+    label.className = 'gl-sidebar-label';
+    label.textContent = 'Gemini Lite';
+
+    button.appendChild(svg);
+    button.appendChild(label);
+    button.addEventListener('click', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSidebar();
+      try {
+        if (window.GeminiHost && window.GeminiHost.openAbout) {
+          window.GeminiHost.openAbout();
+        }
+      } catch (error) {
+        /* bridge unavailable */
+      }
+    });
+
+    section.appendChild(button);
+    host.insertBefore(section, controls);
+  }
+
   function scan(root) {
     var scope = root && root.querySelectorAll ? root : document.body;
     if (!scope) return;
@@ -238,6 +325,8 @@
       var target = containerFor(node);
       if (!protectedElement(target) && !isLandmark(target)) hide(target);
     }
+
+    ensureLiteSection();
   }
 
   function scheduleScan() {
@@ -365,6 +454,96 @@
     }
 
     return path === '' || path === '/app';
+  }
+
+  function isSidebarOpen() {
+    return !!document.querySelector(
+      'mat-sidenav.mat-drawer-opened, .mat-drawer-opened, .mat-drawer-backdrop.mat-drawer-shown'
+    );
+  }
+
+  function findMenuButton() {
+    for (var i = 0; i < MENU_SELECTORS.length; i++) {
+      var candidates = document.querySelectorAll(MENU_SELECTORS[i]);
+      for (var j = 0; j < candidates.length; j++) {
+        if (isVisible(candidates[j])) return candidates[j];
+      }
+    }
+
+    var buttons = document.querySelectorAll('button');
+    for (var k = 0; k < buttons.length; k++) {
+      var button = buttons[k];
+      if (!isVisible(button)) continue;
+      var label =
+        (button.getAttribute('aria-label') || '') + ' ' +
+        (button.getAttribute('title') || '');
+      var rect = button.getBoundingClientRect();
+      if (MENU_LABEL_RE.test(label) && rect.left < 120 && rect.top < 160) {
+        return button;
+      }
+    }
+
+    // Last-resort fallback: Gemini's hamburger is the top-left icon button.
+    for (var m = 0; m < buttons.length; m++) {
+      var fallback = buttons[m];
+      if (!isVisible(fallback)) continue;
+      var box = fallback.getBoundingClientRect();
+      if (box.left <= 24 && box.top <= 48 &&
+          box.width >= 36 && box.width <= 72 &&
+          box.height >= 36 && box.height <= 72) {
+        return fallback;
+      }
+    }
+    return null;
+  }
+
+  function openSidebar() {
+    if (isSidebarOpen()) return true;
+    var button = findMenuButton();
+    if (!button) return false;
+    try {
+      button.click();
+    } catch (error) {
+      return false;
+    }
+    return true;
+  }
+
+  function closeSidebar() {
+    if (!isSidebarOpen()) return false;
+
+    var backdrop = document.querySelector('.mat-drawer-backdrop.mat-drawer-shown');
+    if (backdrop) {
+      try {
+        backdrop.click();
+        return true;
+      } catch (error) {
+        /* fall through to the other close controls */
+      }
+    }
+
+    var closeButton = document.querySelector(
+      'mat-sidenav button[aria-label*="close" i], mat-sidenav button[aria-label*="zamknij" i]'
+    );
+    if (closeButton) {
+      try {
+        closeButton.click();
+        return true;
+      } catch (error) {
+        /* fall through */
+      }
+    }
+
+    var menu = findMenuButton();
+    if (menu) {
+      try {
+        menu.click();
+        return true;
+      } catch (error) {
+        return false;
+      }
+    }
+    return false;
   }
 
   function isDictating() {
@@ -537,24 +716,40 @@
     });
   }
 
+  function schedulePromoWork() {
+    var run = function () {
+      installObservers();
+      scan(document.body);
+    };
+    if (window.requestIdleCallback) {
+      window.requestIdleCallback(run, { timeout: 1200 });
+    } else {
+      window.setTimeout(run, 500);
+    }
+  }
+
   function boot() {
     if (booted) return;
     booted = true;
+    // Only immediate, cheap work belongs on the critical path. Known promos are
+    // already hidden by CSS; scanning and observers can wait for the page to settle.
     injectStyles();
     installClickBlocker();
-    installObservers();
+    ensureLiteSection();
     reportTheme();
-    scan(document.body);
+    schedulePromoWork();
   }
 
   window.__gl = {
-    version: 2,
+    version: 4,
     scan: function () {
       scan(document.body);
     },
     focus: focusWithRetry,
     newChat: startNewChat,
     voice: startVoice,
+    openSidebar: openSidebar,
+    closeSidebar: closeSidebar,
     reportTheme: reportTheme
   };
 

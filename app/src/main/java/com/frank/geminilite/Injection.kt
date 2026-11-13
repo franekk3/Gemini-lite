@@ -23,6 +23,16 @@ object Injection {
         "(function(){try{return !!(window.__gl&&window.__gl.voice&&window.__gl.voice());}" +
             "catch(e){return false;}})()"
 
+    /** Opens Gemini's conversation drawer by clicking its menu button. */
+    const val OPEN_SIDEBAR_COMMAND =
+        "(function(){try{return !!(window.__gl&&window.__gl.openSidebar&&window.__gl.openSidebar());}" +
+            "catch(e){return false;}})()"
+
+    /** Closes Gemini's conversation drawer if it is open. */
+    const val CLOSE_SIDEBAR_COMMAND =
+        "(function(){try{return !!(window.__gl&&window.__gl.closeSidebar&&window.__gl.closeSidebar());}" +
+            "catch(e){return false;}})()"
+
     @Volatile
     private var cachedScript: String? = null
 

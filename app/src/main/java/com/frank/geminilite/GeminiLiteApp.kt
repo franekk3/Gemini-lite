@@ -1,14 +1,15 @@
 package com.frank.geminilite
 
 import android.app.Application
+import android.content.res.Configuration
 import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
 
 /**
- * Warms up the Chromium engine while the system splash screen is still visible.
- * Creating the first WebView is one of the slowest parts of a cold start; doing it
- * here means the real WebView in [MainActivity] attaches noticeably faster.
+ * Kicks off the real Gemini WebView as early as possible. The preloaded page is
+ * adopted by [MainActivity], so the heavy Chromium initialization and the network
+ * request happen while the system splash screen is still visible.
  */
 class GeminiLiteApp : Application() {
 
@@ -19,20 +20,16 @@ class GeminiLiteApp : Application() {
             WebView.setWebContentsDebuggingEnabled(true)
         }
 
-        try {
-            val warmUp = WebView(this)
-            warmUp.settings.javaScriptEnabled = true
-            warmUp.loadUrl("about:blank")
-            Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    warmUp.stopLoading()
-                    warmUp.destroy()
-                } catch (_: Throwable) {
-                    // Never let warm-up cleanup affect app startup.
-                }
-            }, 5_000)
-        } catch (_: Throwable) {
-            // A failed warm-up only costs a little startup time.
-        }
+        WebViewPreloader.prepare(this)
+        // Widget appearance is not on the cold-start critical path.
+        Handler(Looper.getMainLooper()).postDelayed(
+            { WidgetThemeUpdater.refreshAll(this) },
+            2_000
+        )
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        WidgetThemeUpdater.refreshAll(this)
     }
 }

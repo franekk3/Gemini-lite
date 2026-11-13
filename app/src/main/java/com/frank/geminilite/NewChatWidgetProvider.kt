@@ -24,7 +24,21 @@ class NewChatWidgetProvider : AppWidgetProvider() {
     companion object {
 
         fun buildRemoteViews(context: Context): RemoteViews {
+            val dark = WidgetThemePrefs.resolveDark(context)
             val views = RemoteViews(context.packageName, R.layout.widget_new_chat)
+            views.setInt(
+                R.id.widget_root,
+                "setBackgroundResource",
+                if (dark) R.drawable.widget_background_dark else R.drawable.widget_background
+            )
+            views.setImageViewResource(
+                R.id.widget_icon,
+                if (dark) R.drawable.ic_spark_white else R.drawable.ic_spark
+            )
+            views.setTextColor(
+                R.id.widget_text,
+                context.getColor(if (dark) R.color.widget_text_dark else R.color.widget_text)
+            )
             views.setOnClickPendingIntent(
                 R.id.widget_root,
                 WidgetIntents.newChat(context, requestCode = 1001)

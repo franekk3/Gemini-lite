@@ -18,4 +18,20 @@
 
     <string name="shortcut_new_chat_short">New chat</string>
     <string name="shortcut_new_chat_long">Start a new Gemini chat</string>
+
+    <string name="about_title">Gemini Lite</string>
+    <string name="about_version">Version %1$s · Unofficial Gemini client</string>
+    <string name="about_description">A fast, lightweight, unofficial Android client for Gemini. Native back navigation, cleaner pages, cached sessions, home-screen widgets and voice input.</string>
+    <string name="about_project_section">PROJECT</string>
+    <string name="about_github">github.com/franekk3/Gemini-lite</string>
+    <string name="about_widgets_section">WIDGET APPEARANCE</string>
+    <string name="about_widgets_hint">Both home-screen widgets update immediately. Auto follows the device theme.</string>
+    <string name="about_widget_auto">Auto (follow device theme)</string>
+    <string name="about_widget_bright">Bright</string>
+    <string name="about_widget_dark">Dark</string>
+    <string name="about_widget_saved">Widget appearance updated</string>
+    <string name="about_section">ABOUT</string>
+    <string name="about_disclaimer">Gemini Lite is an unofficial project. It is not affiliated with, endorsed by or sponsored by Google LLC. Gemini and Google are trademarks of Google LLC.</string>
+    <string name="about_license">MIT License · Built with Android WebView</string>
+    <string name="about_back">Back</string>
 </resources>
